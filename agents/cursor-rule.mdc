@@ -1,0 +1,15 @@
+# Cursor Rule — MinuteFlow Alpha
+
+When the user asks to generate minute-level alpha factors, intraday signals, or
+VWAP/order-flow-based strategies:
+
+1. Read `SKILL.md` at this skill root for full instructions.
+2. Read `references/minute_alpha_ops.md` for the formula contract.
+3. Ensure `.env` has PandaData credentials.
+4. Run `scripts/fetch_minute_data.py` → `scripts/extract_minute_features.py` →
+   `scripts/generate_minute_alphas.py` → `scripts/validate_minute_alphas.py`
+   in sequence.
+5. Present validated alphas with source attribution.
+
+Always prefer `rank()` and `zscore()` based expressions for numerical stability.
+Never use `log()` without clamping, and never divide without zero-guarding.

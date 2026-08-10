@@ -1,0 +1,13 @@
+{
+  "_note": "This file documents default parameters. Scripts use CLI arguments, not this file directly. Kept as a reference template for the documented defaults.",
+  "frequency": "5m",
+  "time_zone": ["09:30", "15:00"],
+  "universe": "000300",
+  "_universe_help": "Stock universe index code: 000300=CSI 300, 000905=CSI 500, 000852=CSI 1000, 000016=SSE 50. Currently approximated as top 300 by market cap.",
+  "lookback_days": 20,
+  "_lookback_days_help": "Trading days of minute data. 1m limited to ~1 month; 5m allows ~6 months; 15m allows ~1 year. Set via --start-date/--end-date CLI args.",
+  "max_alphas": 5,
+  "nan_threshold": 0.1,
+  "extreme_threshold": 5.0,
+  "output_dir": "output"
+}

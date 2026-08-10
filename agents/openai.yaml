@@ -1,0 +1,7 @@
+name: minuteflow-alpha
+description: Generate alpha factor expressions from minute-level market data using PandaData. Takes documents or natural language queries as input and produces validated alpha expressions exploiting intraday microstructure.
+tools:
+  - run
+  - read
+model: inherit
+color: "#2E7D32"

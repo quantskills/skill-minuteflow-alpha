@@ -1,0 +1,336 @@
+{
+  "_schema": "1.0",
+  "_description": "Complete definitions of all minute-derived features. Each entry documents the exact formula used to compute the feature from raw minute bar data (open, high, low, close, volume, amount, num_trades, minute).",
+
+  "raw_input_columns": {
+    "open": "Bar open price",
+    "high": "Bar high price",
+    "low": "Bar low price",
+    "close": "Bar close price",
+    "volume": "Bar volume",
+    "amount": "Bar turnover amount (CNY)",
+    "num_trades": "Number of trades in bar",
+    "minute": "Bar timestamp as HHMMSS integer (e.g. 93000 = 09:30:00)"
+  },
+
+  "time_boundaries": {
+    "first_hour": "09:30 – 10:30 (minute >= 93000 and <= 103000)",
+    "last_hour": "14:00 – 15:00 (minute >= 140000 and <= 150000)",
+    "morning": "09:30 – 11:30 (minute <= 113000)",
+    "afternoon": "13:00 – 15:00 (minute >= 130000)",
+    "first_30m": "09:30 – 10:00 (minute <= 100000)",
+    "first_60m": "09:30 – 10:30 (minute <= 103000)"
+  },
+
+  "features": {
+    "vwap_divergence_close": {
+      "family": "vwap",
+      "formula": "(close_eod − VWAP_eod) / VWAP_eod",
+      "description": "How far the closing price is from the cumulative volume-weighted average price. Positive = close above fair value, negative = below.",
+      "derivation": "VWAP_eod = Σ(amount) / Σ(volume) over all bars. close_eod = last bar's close.",
+      "unit": "ratio",
+      "range_note": "typically [-0.05, +0.05]"
+    },
+    "vwap_divergence_max": {
+      "family": "vwap",
+      "formula": "max(|(close_i − VWAP_cum_i) / VWAP_cum_i|) over all bars i",
+      "description": "Maximum absolute deviation from cumulative VWAP during the day. Measures worst execution relative to fair value.",
+      "derivation": "VWAP_cum_i = cumulative sum(amount) / cumulative sum(volume) up to bar i.",
+      "unit": "ratio"
+    },
+    "vwap_divergence_30m": {
+      "family": "vwap",
+      "formula": "(close_eod − VWAP_30m) / VWAP_30m",
+      "description": "EOD close vs VWAP after first 30 minutes of trading. Large divergence means price moved significantly after the opening auction settled.",
+      "derivation": "VWAP_30m = VWAP_cum at bar where minute <= 100000.",
+      "unit": "ratio"
+    },
+    "vwap_slope": {
+      "family": "vwap",
+      "formula": "slope(VWAP_cum over bar index) / mean(VWAP_cum)",
+      "description": "Normalized linear slope of VWAP over the day. Positive = VWAP rising (buying pressure), negative = falling.",
+      "derivation": "Linear regression y = ax + b of VWAP_cum vs bar index. Slope a divided by mean VWAP_cum for normalization.",
+      "unit": "ratio per bar"
+    },
+    "vwap_volume_share_last_hour": {
+      "family": "vwap",
+      "formula": "Σ volume(14:00–15:00) / Σ volume(full day)",
+      "description": "Fraction of day's total volume traded in the last trading hour. High values indicate closing-session activity concentration.",
+      "derivation": "Sum volume where minute >= 140000 and <= 150000, divided by total daily volume.",
+      "unit": "ratio [0,1]"
+    },
+    "vwap_volume_share_first_hour": {
+      "family": "vwap",
+      "formula": "Σ volume(09:30–10:30) / Σ volume(full day)",
+      "description": "Fraction of day's total volume traded in the first trading hour. High values = morning-heavy trading (retail/overnight-news driven).",
+      "derivation": "Sum volume where minute >= 93000 and <= 103000, divided by total daily volume.",
+      "unit": "ratio [0,1]"
+    },
+    "flow_imbalance": {
+      "family": "order_flow",
+      "formula": "Σ signed_volume_i / Σ volume_i",
+      "description": "Net order flow proxy. Positive = net buying pressure, negative = net selling pressure. Uses bar-level close position as buy/sell proxy.",
+      "derivation": "signed_volume_i = ((close_i − low_i) / (high_i − low_i) − 0.5) × 2 × volume_i. Clamped to [-volume_i, +volume_i]. flow_imbalance = sum(signed_volume) / sum(volume).",
+      "unit": "ratio [-1,+1]"
+    },
+    "flow_imbalance_last_hour": {
+      "family": "order_flow",
+      "formula": "Σ signed_volume_i(14:00–15:00) / Σ volume_i(14:00–15:00)",
+      "description": "Order flow imbalance in the last trading hour. Positive = late-session buying (institutional positioning for next day).",
+      "derivation": "Same as flow_imbalance but restricted to bars where minute >= 140000 and <= 150000.",
+      "unit": "ratio [-1,+1]"
+    },
+    "flow_imbalance_first_hour": {
+      "family": "order_flow",
+      "formula": "Σ signed_volume_i(09:30–10:30) / Σ volume_i(09:30–10:30)",
+      "description": "Order flow imbalance in the first trading hour. Reflects overnight news absorption and opening-auction follow-through.",
+      "derivation": "Same as flow_imbalance but restricted to bars where minute >= 93000 and <= 103000.",
+      "unit": "ratio [-1,+1]"
+    },
+    "flow_persistence": {
+      "family": "order_flow",
+      "formula": "corr(signed_volume[0:n-1], signed_volume[1:n])",
+      "description": "Lag-1 autocorrelation of signed volume across 5-min bars. High persistence = trending order flow (informed), low/negative = mean-reverting flow (noise).",
+      "derivation": "Pearson correlation between signed_volume[0:-1] and signed_volume[1:] across bars within the day.",
+      "unit": "correlation [-1,+1]"
+    },
+    "buy_volume_ratio": {
+      "family": "order_flow",
+      "formula": "Σ volume(close > open) / Σ volume(full day)",
+      "description": "Fraction of volume in up-bars (close > open). Simple buy/sell proxy — high values = broad buying, low = broad selling.",
+      "derivation": "Sum volume where close_i > open_i, divided by total daily volume.",
+      "unit": "ratio [0,1]"
+    },
+    "flow_reversal": {
+      "family": "order_flow",
+      "formula": "flow_imbalance_first_hour − flow_imbalance_last_hour",
+      "description": "Sign change in order flow from morning to afternoon. Positive = morning buying flipped to afternoon selling (distribution pattern). Negative = morning selling flipped to afternoon buying (accumulation pattern).",
+      "derivation": "Difference between first-hour and last-hour flow imbalance.",
+      "unit": "ratio [-2,+2]"
+    },
+    "open_30m_return": {
+      "family": "momentum_decay",
+      "formula": "(close_30m − open) / open",
+      "description": "Return from open to 30 minutes after open. Captures the initial direction and magnitude of opening-gap follow-through.",
+      "derivation": "close_30m = close of last bar where minute <= 100000. open = first bar's open price.",
+      "unit": "ratio"
+    },
+    "open_60m_return": {
+      "family": "momentum_decay",
+      "formula": "(close_60m − open) / open",
+      "description": "Return from open to 60 minutes after open. Wider window than 30m, captures more of the morning session's direction.",
+      "derivation": "close_60m = close of last bar where minute <= 103000.",
+      "unit": "ratio"
+    },
+    "decay_ratio": {
+      "family": "momentum_decay",
+      "formula": "open_30m_return / day_return",
+      "description": "How much of the full day's return is driven by the first 30 minutes. >1 = opening move partially faded during the day. <0 = opening direction reversed (gap fill).",
+      "derivation": "day_return = (close_eod − open) / open. decay_ratio = open_30m_return / day_return.",
+      "unit": "ratio"
+    },
+    "reversal_speed": {
+      "family": "momentum_decay",
+      "formula": "bar_index where close crosses 50% of open_30m_return",
+      "description": "How many bars it takes for the opening move to be half-retraced. Lower = faster reversal. 0 if never halved.",
+      "derivation": "Find first bar where: if open_30m_return > 0 and close <= open + 0.5×(close_30m − open); or if < 0 and close >= open + 0.5×(close_30m − open).",
+      "unit": "bar count"
+    },
+    "gap_fill_ratio": {
+      "family": "momentum_decay",
+      "formula": "open_30m_return (proxy for gap closure)",
+      "description": "Proxy for overnight gap fill ratio. Currently approximated by open_30m_return — a full implementation would use previous day's close.",
+      "derivation": "Simplified: gap_fill_ratio ≈ open_30m_return.",
+      "unit": "ratio"
+    },
+    "afternoon_momentum": {
+      "family": "momentum_decay",
+      "formula": "(close_eod − open_afternoon) / open_afternoon",
+      "description": "Return from 13:00 afternoon open to market close. Captures post-lunch session direction.",
+      "derivation": "open_afternoon = open of first bar where minute >= 130000. close_eod = last bar's close.",
+      "unit": "ratio"
+    },
+    "close_auction_return": {
+      "family": "momentum_decay",
+      "formula": "(close_eod − close_penultimate) / close_penultimate",
+      "description": "Return in the last bar of the day. Captures closing-auction price movement.",
+      "derivation": "close_penultimate = second-to-last bar's close. close_eod = last bar's close.",
+      "unit": "ratio"
+    },
+    "morning_volatility": {
+      "family": "volatility_curve",
+      "formula": "std(bar_returns in morning session: 09:30–11:30)",
+      "description": "Standard deviation of 5-min bar returns in the morning session.",
+      "derivation": "bar_return = close_i / close_(i-1) − 1. std over bars where minute <= 113000.",
+      "unit": "ratio"
+    },
+    "afternoon_volatility": {
+      "family": "volatility_curve",
+      "formula": "std(bar_returns in afternoon session: 13:00–15:00)",
+      "description": "Standard deviation of 5-min bar returns in the afternoon session.",
+      "derivation": "std over bars where minute >= 130000.",
+      "unit": "ratio"
+    },
+    "vol_curve_skew": {
+      "family": "volatility_curve",
+      "formula": "morning_volatility / afternoon_volatility",
+      "description": "Ratio of morning to afternoon volatility. >1 = U-shaped (morning more volatile), <1 = L-shaped (afternoon more volatile).",
+      "derivation": "Simple ratio. Clamped to 1.0 if afternoon_volatility ≈ 0.",
+      "unit": "ratio"
+    },
+    "jump_count": {
+      "family": "volatility_curve",
+      "formula": "count( |bar_return_i| > 3 × std(all bar_returns) )",
+      "description": "Number of 5-min bars with returns exceeding 3× the intraday standard deviation. Proxies for news-driven price jumps.",
+      "derivation": "Count bars where absolute bar return > 3 × intraday std.",
+      "unit": "integer count"
+    },
+    "vol_clustering": {
+      "family": "volatility_curve",
+      "formula": "corr(|bar_return[0:n-1]|, |bar_return[1:n]|)",
+      "description": "Lag-1 autocorrelation of absolute bar returns. High clustering = volatility begets volatility (trending uncertainty).",
+      "derivation": "Pearson correlation between abs(bar_return)[:-1] and abs(bar_return)[1:].",
+      "unit": "correlation [-1,+1]"
+    },
+    "range_ratio": {
+      "family": "volatility_curve",
+      "formula": "(max(high) − min(low)) / open_first_bar",
+      "description": "Full-day range as a fraction of opening price. Normalized intraday range — high values = volatile day.",
+      "derivation": "max high and min low across all bars, divided by first bar's open.",
+      "unit": "ratio"
+    },
+    "trade_size_gini": {
+      "family": "liquidity",
+      "formula": "Gini(amount_i / num_trades_i)",
+      "description": "Gini coefficient of trade sizes across 5-min bars. High = concentrated trade sizes (few bars dominate), low = uniform trade sizes.",
+      "derivation": "trade_size_i = amount_i / num_trades_i. Gini = (2Σ(i × sorted_sizes)) / (n × Σsorted_sizes) − (n+1)/n.",
+      "unit": "Gini [0,1]"
+    },
+    "price_impact_per_trade": {
+      "family": "liquidity",
+      "formula": "mean( |Δclose_i| / num_trades_i )",
+      "description": "Average absolute price change per trade across bars. Higher = more price impact per trade (less liquid).",
+      "derivation": "|close_i − close_(i-1)| / num_trades_i, averaged over all bars.",
+      "unit": "price change / trade"
+    },
+    "price_impact_tail": {
+      "family": "liquidity",
+      "formula": "percentile_95( |Δclose_i| / num_trades_i )",
+      "description": "95th percentile of price impact per trade. Captures worst-case liquidity episodes during the day.",
+      "derivation": "95th percentile of the price_impact distribution across bars.",
+      "unit": "price change / trade"
+    },
+    "liquidity_gap_count": {
+      "family": "liquidity",
+      "formula": "count(volume_i = 0) + count(num_trades_i = 0)",
+      "description": "Number of 5-min bars with zero volume or zero trades. Higher = more illiquid, sparsely traded intervals.",
+      "derivation": "Simple count over all bars in the day.",
+      "unit": "integer count"
+    },
+    "spread_proxy": {
+      "family": "liquidity",
+      "formula": "mean( (high_i − low_i) / close_i )",
+      "description": "Average bar-level spread proxy. (high−low)/close approximates the bid-ask spread as a fraction of price.",
+      "derivation": "Mean of (high_i − low_i) / close_i across all bars.",
+      "unit": "ratio"
+    },
+    "amihud_illiq": {
+      "family": "liquidity",
+      "formula": "mean( |bar_return_i| / amount_i )",
+      "description": "Amihud (2002) illiquidity measure. Higher = more price impact per unit of turnover (less liquid).",
+      "derivation": "Mean of |bar_return_i| / amount_i across bars. Amihud, Y. (2002). Illiquidity and stock returns. J. Financial Markets.",
+      "unit": "return / CNY"
+    },
+    "volume_stability": {
+      "family": "liquidity",
+      "formula": "std(volume_i) / mean(volume_i)",
+      "description": "Coefficient of variation of volume across 5-min bars. Lower = more stable (predictable) volume pattern. Higher = erratic, spiky volume.",
+      "derivation": "Standard deviation / mean of bar volumes.",
+      "unit": "ratio"
+    },
+    "large_trade_ratio": {
+      "family": "trade_concentration",
+      "formula": "Σ volume(amount > P95) / Σ volume(all)",
+      "description": "Fraction of total volume in bars with amount > 95th percentile. High = dominated by large trades (institutional).",
+      "derivation": "P95 = 95th percentile of bar amounts. Sum volume for bars > P95, divide by total volume.",
+      "unit": "ratio [0,1]"
+    },
+    "trade_concentration_hhi": {
+      "family": "trade_concentration",
+      "formula": "Σ (volume_i / total_volume)²",
+      "description": "Herfindahl-Hirschman Index of volume distribution across 5-min bars. High = volume concentrated in few bars. Low = volume evenly distributed.",
+      "derivation": "Sum of squared volume shares across all bars.",
+      "unit": "HHI [1/N, 1]"
+    },
+    "block_trade_count": {
+      "family": "trade_concentration",
+      "formula": "count(amount_i > 10 × median(amount))",
+      "description": "Number of 5-min bars with amount exceeding 10× the median bar amount. Identifies block-trade-level bars.",
+      "derivation": "Count bars where amount > 10 × median amount across the day.",
+      "unit": "integer count"
+    },
+    "retail_flow_ratio": {
+      "family": "trade_concentration",
+      "formula": "Σ volume(num_trades > median) / Σ volume(all)",
+      "description": "Fraction of volume in bars with above-median number of trades. More trades per bar = more retail participation (smaller orders).",
+      "derivation": "Median num_trades across bars. Sum volume where num_trades > median, divide by total volume.",
+      "unit": "ratio [0,1]"
+    },
+    "institutional_participation": {
+      "family": "trade_concentration",
+      "formula": "1 − retail_flow_ratio",
+      "description": "Inverse of retail flow ratio. Higher = more volume in bars with fewer, larger trades (institutional).",
+      "derivation": "1.0 − retail_flow_ratio.",
+      "unit": "ratio [0,1]"
+    },
+    "sector_lead_rank": {
+      "family": "lead_lag",
+      "formula": "0.5 (placeholder)",
+      "description": "Placeholder for sector-level lead-lag computation. Full implementation requires cross-stock correlation within sectors.",
+      "derivation": "Currently set to 0.5. Future: cross-sectional rank of 1-min return lead over sector peers.",
+      "unit": "rank [0,1]"
+    },
+    "peer_correlation_lag1": {
+      "family": "lead_lag",
+      "formula": "0.0 (placeholder)",
+      "description": "Placeholder for peer correlation at lag 1. Full implementation requires cross-stock computation.",
+      "derivation": "Currently 0.0.",
+      "unit": "correlation"
+    },
+    "information_arrival_speed": {
+      "family": "lead_lag",
+      "formula": "argmin( cumulative_abs_return >= 0.5 × total_abs_return ) / num_bars",
+      "description": "Normalized time to reach 50% of the day's total absolute return. Lower = information arrives early (opening-driven). Higher = information arrives gradually throughout the day.",
+      "derivation": "Cumulative sum of |bar_return|. Find bar index where cumsum >= 0.5 × total, divide by total bars.",
+      "unit": "fraction [0,1]"
+    },
+    "lead_lag_strength": {
+      "family": "lead_lag",
+      "formula": "0.0 (placeholder)",
+      "description": "Placeholder for maximum cross-correlation with sector ETF at lags ≤ 10 min.",
+      "derivation": "Currently 0.0.",
+      "unit": "correlation"
+    },
+    "flow_vol_interaction": {
+      "family": "interaction",
+      "formula": "flow_imbalance × vol_clustering",
+      "description": "Interaction: order flow direction × volatility persistence. High + clustering = trending informed flow. Low + clustering = choppy noise.",
+      "derivation": "Element-wise product of two base features.",
+      "unit": "product of ratios"
+    },
+    "vwap_momentum_combo": {
+      "family": "interaction",
+      "formula": "vwap_divergence_close × afternoon_momentum",
+      "description": "Interaction: above-VWAP close + positive afternoon momentum = sustained buying. Below-VWAP + negative momentum = sustained selling.",
+      "derivation": "Element-wise product of two base features.",
+      "unit": "product of ratios"
+    },
+    "liquidity_volatility_ratio": {
+      "family": "interaction",
+      "formula": "amihud_illiq / morning_volatility",
+      "description": "Illiquidity normalized by volatility. High = illiquid relative to how much it moves (expensive to trade).",
+      "derivation": "Division, with zero-guard on morning_volatility.",
+      "unit": "illiquidity / volatility"
+    }
+  }
+}
