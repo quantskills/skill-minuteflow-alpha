@@ -1,523 +1,261 @@
 #!/usr/bin/env python3
-"""Extract daily-aggregated features from minute-level OHLCV data.
+"""Feature extractor: symbol-level with suppressed warnings for performance."""
 
-Produces a flat date×symbol table with 40+ minute-derived features across
-7 families: VWAP, order flow, momentum decay, volatility curve, liquidity,
-trade concentration, lead-lag, and interaction terms.
-
-Also copies the feature definitions JSON to the output directory so every
-run has a self-contained record of how each feature was computed.
-
-Usage:
-    python extract_minute_features.py \
-        --input output/run_001/minute_data.csv \
-        --output output/run_001/features.csv
-"""
-
-from __future__ import annotations
-
-import argparse
-import shutil
-import sys
+import argparse, shutil, sys, warnings
 from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
+warnings.filterwarnings("ignore")
+
+
+def _safe_autocorr(x):
+    """Lag-1 autocorrelation, returns 0 on degenerate input."""
+    x = np.asarray(x, dtype=float)
+    x = x[~np.isnan(x)]
+    if len(x) < 3: return 0.0
+    std = float(np.std(x))
+    if std < 1e-15: return 0.0
+    c = np.corrcoef(x[:-1], x[1:])
+    return float(c[0, 1]) if not np.isnan(c[0, 1]) else 0.0
+
+
+def _process_one_symbol(grp: pd.DataFrame) -> pd.DataFrame:
+    """Extract all features for one symbol. All derived columns added first."""
+
+    grp["minute_int"] = grp["minute"].astype(int)
+    grp["cum_vp"] = grp.groupby("date")["amount"].cumsum()
+    grp["cum_vol"] = grp.groupby("date")["volume"].cumsum()
+    grp["vwap_cum"] = (grp["cum_vp"] / grp["cum_vol"].replace(0, np.nan)).fillna(grp["close"])
+    bar_range = grp["high"] - grp["low"]
+    grp["close_pos"] = ((grp["close"] - grp["low"]) / bar_range.replace(0, np.nan)).fillna(0.5)
+    grp["signed_volume"] = (grp["close_pos"] - 0.5) * 2 * grp["volume"]
+    grp["is_up_bar"] = grp["close"] > grp["open"]
+    grp["bar_return"] = grp["close"].pct_change().where(grp["date"] == grp["date"].shift())
+    grp["trade_size"] = grp["amount"] / grp["num_trades"].replace(0, np.nan)
+    grp["price_impact"] = grp["close"].diff().abs() / grp["num_trades"].replace(0, np.nan)
+    grp["spread_proxy_col"] = (grp["high"] - grp["low"]) / grp["close"].replace(0, np.nan)
+    grp["amihud_col"] = grp["close"].pct_change().abs() / grp["amount"].replace(0, np.nan)
+
+    gb = grp.groupby("date", sort=False)
+
+    is_30m = grp["minute_int"] <= 100000
+    is_60m = grp["minute_int"] <= 103000
+    is_last = (grp["minute_int"] >= 140000) & (grp["minute_int"] <= 150000)
+    is_first = (grp["minute_int"] >= 93000) & (grp["minute_int"] <= 103000)
+    is_morning = grp["minute_int"] <= 113000
+    is_afternoon = grp["minute_int"] >= 130000
+
+    close_last = gb["close"].last()
+    open_price = gb["open"].first()
+    high_max = gb["high"].max()
+    low_min = gb["low"].min()
+    total_vol = gb["volume"].sum()
+
+    results = pd.DataFrame(index=close_last.index)
+
+    # ── VWAP ───────────────────────
+    vwap_last = gb["vwap_cum"].last()
+    vwap_safe = vwap_last.where(vwap_last > 0, close_last)
+    vwap_div = (grp["close"] - grp["vwap_cum"]) / grp["vwap_cum"].replace(0, np.nan)
+    vwap_div_max = vwap_div.abs().groupby(grp["date"]).max()
+
+    vwap_30m = grp[is_30m].groupby("date")["vwap_cum"].last().reindex(close_last.index)
+    vwap_30m = vwap_30m.where(vwap_30m > 0, close_last)
+
+    last_vol = grp[is_last].groupby("date")["volume"].sum().reindex(close_last.index, fill_value=0)
+    first_vol = grp[is_first].groupby("date")["volume"].sum().reindex(close_last.index, fill_value=0)
+
+    results["vwap_divergence_close"] = ((close_last - vwap_safe) / vwap_safe.replace(0, np.nan)).fillna(0).values
+    results["vwap_divergence_max"] = vwap_div_max.fillna(0).values
+    results["vwap_divergence_30m"] = ((close_last - vwap_30m) / vwap_30m.replace(0, np.nan)).fillna(0).values
+    results["vwap_volume_share_last_hour"] = (last_vol / total_vol.replace(0, np.nan)).fillna(0).values
+    results["vwap_volume_share_first_hour"] = (first_vol / total_vol.replace(0, np.nan)).fillna(0).values
+
+    def _vslope(g):
+        y = g["vwap_cum"].values; m = ~np.isnan(y) & (y > 0)
+        if m.sum() < 2: return 0.0
+        return float(np.polyfit(np.arange(len(g))[m], y[m], 1)[0] / y[m].mean())
+    results["vwap_slope"] = gb.apply(_vslope).reindex(close_last.index, fill_value=0).values
+
+    # ── Order Flow ──────────────────
+    signed_sum = gb["signed_volume"].sum()
+    buy_vol = grp[grp["is_up_bar"]].groupby("date")["volume"].sum().reindex(close_last.index, fill_value=0)
+    slast = grp[is_last].groupby("date")["signed_volume"].sum().reindex(close_last.index, fill_value=0)
+    sfirst = grp[is_first].groupby("date")["signed_volume"].sum().reindex(close_last.index, fill_value=0)
+
+    results["flow_imbalance"] = (signed_sum / total_vol.replace(0, np.nan)).fillna(0).values
+    results["flow_imbalance_last_hour"] = (slast / last_vol.replace(0, np.nan)).fillna(0).values
+    results["flow_imbalance_first_hour"] = (sfirst / first_vol.replace(0, np.nan)).fillna(0).values
+    results["buy_volume_ratio"] = (buy_vol / total_vol.replace(0, np.nan)).fillna(0.5).values
+    results["flow_reversal"] = results["flow_imbalance_first_hour"] - results["flow_imbalance_last_hour"]
+
+    def _fpers(g):
+        return _safe_autocorr(g["signed_volume"].values)
+    results["flow_persistence"] = gb.apply(_fpers).reindex(close_last.index, fill_value=0).values
+
+    # ── Momentum Decay ──────────────
+    close_30m_c = grp[is_30m].groupby("date")["close"].last().reindex(close_last.index)
+    close_60m_c = grp[is_60m].groupby("date")["close"].last().reindex(close_last.index)
+    aft_open = grp[is_afternoon].groupby("date")["open"].first().reindex(close_last.index)
+    aft_close = grp[is_afternoon].groupby("date")["close"].last().reindex(close_last.index)
+
+    o30 = ((close_30m_c - open_price) / open_price.replace(0, np.nan)).fillna(0)
+    o60 = ((close_60m_c - open_price) / open_price.replace(0, np.nan)).fillna(0)
+    day_ret = ((close_last - open_price) / open_price.replace(0, np.nan)).fillna(0)
+    afternoon_ret = ((aft_close - aft_open) / aft_open.replace(0, np.nan)).fillna(0)
+    close_prev = gb["close"].nth(-2).reindex(close_last.index)
+    close_auc = ((close_last - close_prev) / close_prev.replace(0, np.nan)).fillna(0)
+
+    results["open_30m_return"] = o30.values
+    results["open_60m_return"] = o60.values
+    results["decay_ratio"] = (o30 / day_ret.replace(0, np.nan)).fillna(0).values
+    results["gap_fill_ratio"] = o30.values
+    results["afternoon_momentum"] = afternoon_ret.values
+    results["close_auction_return"] = close_auc.values
+
+    def _rspeed(g):
+        op = float(g["open"].iloc[0])
+        e30 = g[g["minute_int"] <= 100000]
+        if e30.empty or op <= 0: return 0.0
+        o30v = float(e30["close"].iloc[-1] - op) / op
+        if abs(o30v) < 1e-6: return 0.0
+        half = op + 0.5 * (e30["close"].iloc[-1] - op)
+        after = g[g["minute_int"] > 100000]
+        if after.empty: return 0.0
+        cross = after[after["close"] <= half] if o30v > 0 else after[after["close"] >= half]
+        return 0.0 if cross.empty else float(g.index.get_loc(cross.index[0]) + 1)
+    results["reversal_speed"] = gb.apply(_rspeed).reindex(close_last.index, fill_value=0).values
+
+    # ── Volatility Curve ────────────
+    morning_vol = grp[is_morning].groupby("date")["bar_return"].std().reindex(close_last.index, fill_value=0)
+    aft_vol = grp[is_afternoon].groupby("date")["bar_return"].std().reindex(close_last.index, fill_value=0)
+
+    results["morning_volatility"] = morning_vol.values
+    results["afternoon_volatility"] = aft_vol.values
+    results["vol_curve_skew"] = (morning_vol / aft_vol.replace(0, np.nan)).fillna(1.0).values
+    results["range_ratio"] = ((high_max - low_min) / open_price.replace(0, np.nan)).fillna(0).values
+
+    def _jcnt(g):
+        r = g["bar_return"].dropna(); sd = float(r.std()) if len(r) > 0 else 0.0
+        return int((r.abs() > 3*sd).sum()) if sd > 0 else 0
+    results["jump_count"] = gb.apply(_jcnt).reindex(close_last.index, fill_value=0).values
+
+    def _vclust(g):
+        return _safe_autocorr(np.abs(g["bar_return"].dropna().values))
+    results["vol_clustering"] = gb.apply(_vclust).reindex(close_last.index, fill_value=0).values
+
+    # ── Liquidity ──────────────────
+    results["price_impact_per_trade"] = gb["price_impact"].mean().reindex(close_last.index, fill_value=0).values
+    results["price_impact_tail"] = gb["price_impact"].quantile(0.95).reindex(close_last.index, fill_value=0).values
+    results["liquidity_gap_count"] = gb.apply(
+        lambda g: int((g["volume"]==0).sum() + (g["num_trades"]==0).sum())
+    ).reindex(close_last.index, fill_value=0).values
+    results["spread_proxy"] = gb["spread_proxy_col"].mean().reindex(close_last.index, fill_value=0).values
+    results["amihud_illiq"] = gb["amihud_col"].mean().reindex(close_last.index, fill_value=0).values
+    results["volume_stability"] = (gb["volume"].std() / gb["volume"].mean().replace(0, np.nan)).fillna(1.0).values
+
+    def _gini_ts(g):
+        x = np.sort(g["trade_size"].dropna().values.astype(float))
+        if len(x) < 2 or x.sum() == 0: return 0.0
+        n = len(x)
+        return (2 * np.sum(np.arange(1, n+1) * x)) / (n * x.sum()) - (n+1)/n
+    results["trade_size_gini"] = gb.apply(_gini_ts).reindex(close_last.index, fill_value=0).values
+
+    # ── Trade Concentration ────────
+    def _conc(g):
+        tv = g["volume"].sum()
+        p95 = g["amount"].quantile(0.95) if len(g) >= 20 else g["amount"].max()
+        ma = g["amount"].median(); mt = g["num_trades"].median()
+        vs = g["volume"] / tv if tv > 0 else g["volume"] * 0
+        ret = g.loc[g["num_trades"] > mt, "volume"].sum() / tv if tv > 0 else 0.5
+        return pd.Series({
+            "large_trade_ratio": g.loc[g["amount"] > p95, "volume"].sum() / tv if tv > 0 else 0.0,
+            "trade_concentration_hhi": float((vs**2).sum()),
+            "block_trade_count": int((g["amount"] > 10*ma).sum()) if ma > 0 else 0,
+            "retail_flow_ratio": ret,
+            "institutional_participation": 1.0 - ret,
+        })
+    conc_feats = gb.apply(_conc)
+    for c in conc_feats.columns:
+        results[c] = conc_feats[c].reindex(close_last.index, fill_value=0).values
+
+    # ── Lead-Lag ────────────────────
+    def _ll(g):
+        ar = g["close"].pct_change().abs().dropna(); sp = 0.5
+        if len(ar) > 0 and ar.sum() > 0:
+            cs = ar.cumsum(); half = ar.sum() * 0.5
+            if (cs >= half).any():
+                idx = (cs >= half).idxmax()
+                pos = np.where(g.index == idx)[0]
+                sp = float(pos[0]) / max(len(g), 1) if len(pos) > 0 else 0.5
+        return pd.Series({"information_arrival_speed": sp, "sector_lead_rank": 0.5,
+            "peer_correlation_lag1": 0.0, "lead_lag_strength": 0.0})
+    ll_feats = gb.apply(_ll)
+    for c in ll_feats.columns:
+        results[c] = ll_feats[c].reindex(close_last.index, fill_value=0).values
+
+    return results
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# Feature Extraction Functions
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _safe_div(a: pd.Series, b: pd.Series, fill: float = 0.0) -> pd.Series:
-    """Safe division: a / b, with b=0 replaced by fill."""
-    b_safe = b.replace(0, np.nan)
-    result = a / b_safe
-    return result.fillna(fill)
-
-
-def extract_vwap_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute VWAP-family features per symbol per date."""
-    df = df.copy()
-    # Cumulative VWAP per symbol per date
-    df["cum_vp"] = df.groupby(["symbol", "date"])["amount"].cumsum()
-    df["cum_vol"] = df.groupby(["symbol", "date"])["volume"].cumsum()
-    df["vwap_cum"] = _safe_div(df["cum_vp"], df["cum_vol"])
-
-    # Identify bar index per symbol-date
-    df["bar_idx"] = df.groupby(["symbol", "date"]).cumcount()
-
-    # Time-based indexing: identify first hour and last hour
-    df["minute_int"] = df["minute"].astype(int)
-    df["is_first_hour"] = (df["minute_int"] >= 93000) & (df["minute_int"] <= 103000)
-    df["is_last_hour"] = (df["minute_int"] >= 140000) & (df["minute_int"] <= 150000)
-
-    results = []
-
-    for (sym, dt), grp in df.groupby(["symbol", "date"]):
-        rec = {"symbol": sym, "date": dt}
-
-        close = grp["close"].iloc[-1]
-        vwap = grp["vwap_cum"].iloc[-1] if grp["vwap_cum"].iloc[-1] > 0 else close
-        rec["vwap_divergence_close"] = (close - vwap) / vwap if vwap > 0 else 0.0
-
-        # Max intraday VWAP divergence
-        divs = (grp["close"] - grp["vwap_cum"]) / grp["vwap_cum"].replace(0, np.nan)
-        rec["vwap_divergence_max"] = divs.abs().max() if not divs.dropna().empty else 0.0
-
-        # VWAP at 30min
-        early = grp[grp["minute_int"] <= 100000]
-        if not early.empty and early["vwap_cum"].iloc[-1] > 0:
-            vwap_30m = early["vwap_cum"].iloc[-1]
-            rec["vwap_divergence_30m"] = (close - vwap_30m) / vwap_30m
-        else:
-            rec["vwap_divergence_30m"] = 0.0
-
-        # VWAP slope (linear regression of VWAP over bar index)
-        x = np.arange(len(grp))
-        y = grp["vwap_cum"].values
-        mask = ~np.isnan(y) & (y > 0)
-        if mask.sum() >= 2:
-            slope = np.polyfit(x[mask], y[mask], 1)[0]
-            rec["vwap_slope"] = slope / y[mask].mean()  # normalized
-        else:
-            rec["vwap_slope"] = 0.0
-
-        # Volume share: last hour / total
-        total_vol = grp["volume"].sum()
-        last_hour_vol = grp.loc[grp["is_last_hour"], "volume"].sum()
-        first_hour_vol = grp.loc[grp["is_first_hour"], "volume"].sum()
-        rec["vwap_volume_share_last_hour"] = last_hour_vol / total_vol if total_vol > 0 else 0.0
-        rec["vwap_volume_share_first_hour"] = first_hour_vol / total_vol if total_vol > 0 else 0.0
-
-        results.append(rec)
-
-    return pd.DataFrame(results)
-
-
-def extract_order_flow_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute order flow proxy features (no tick data needed)."""
-    df = df.copy()
-
-    # Signed volume proxy: bar position within range
-    df["bar_range"] = df["high"] - df["low"]
-    df["bar_range"] = df["bar_range"].replace(0, np.nan)
-    df["close_pos"] = (df["close"] - df["low"]) / df["bar_range"]
-    df["close_pos"] = df["close_pos"].fillna(0.5)
-    # signed_volume ∈ [-1, 1] scaled to volume
-    df["signed_volume"] = (df["close_pos"] - 0.5) * 2 * df["volume"]
-
-    df["minute_int"] = df["minute"].astype(int)
-    df["is_last_hour"] = (df["minute_int"] >= 140000) & (df["minute_int"] <= 150000)
-    df["is_first_hour"] = (df["minute_int"] >= 93000) & (df["minute_int"] <= 103000)
-    df["is_up_bar"] = df["close"] > df["open"]
-
-    results = []
-    for (sym, dt), grp in df.groupby(["symbol", "date"]):
-        rec = {"symbol": sym, "date": dt}
-        total_vol = grp["volume"].sum()
-
-        rec["flow_imbalance"] = (
-            grp["signed_volume"].sum() / total_vol if total_vol > 0 else 0.0
-        )
-        last = grp[grp["is_last_hour"]]
-        first = grp[grp["is_first_hour"]]
-        last_vol = last["volume"].sum()
-        first_vol = first["volume"].sum()
-
-        rec["flow_imbalance_last_hour"] = (
-            last["signed_volume"].sum() / last_vol if last_vol > 0 else 0.0
-        )
-        rec["flow_imbalance_first_hour"] = (
-            first["signed_volume"].sum() / first_vol if first_vol > 0 else 0.0
-        )
-
-        # Flow persistence: autocorrelation of signed_volume at lag 1
-        sv = grp["signed_volume"].values
-        if len(sv) >= 3:
-            rec["flow_persistence"] = np.corrcoef(sv[:-1], sv[1:])[0, 1] if np.std(sv) > 0 else 0.0
-        else:
-            rec["flow_persistence"] = 0.0
-
-        rec["buy_volume_ratio"] = (
-            grp.loc[grp["is_up_bar"], "volume"].sum() / total_vol if total_vol > 0 else 0.5
-        )
-
-        rec["flow_reversal"] = rec["flow_imbalance_first_hour"] - rec["flow_imbalance_last_hour"]
-
-        results.append(rec)
-
-    return pd.DataFrame(results)
-
-
-def extract_momentum_decay_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute intraday momentum/decay features."""
-    df = df.copy()
-    df["minute_int"] = df["minute"].astype(int)
-
-    results = []
-    for (sym, dt), grp in df.groupby(["symbol", "date"]):
-        rec = {"symbol": sym, "date": dt}
-        open_price = grp["open"].iloc[0]
-        close_price = grp["close"].iloc[-1]
-        day_return = (close_price - open_price) / open_price if open_price > 0 else 0.0
-
-        # Open-30m return
-        early = grp[grp["minute_int"] <= 100000]
-        if not early.empty:
-            open_30m_close = early["close"].iloc[-1]
-            rec["open_30m_return"] = (open_30m_close - open_price) / open_price if open_price > 0 else 0.0
-        else:
-            rec["open_30m_return"] = 0.0
-
-        # Open-60m return
-        early60 = grp[grp["minute_int"] <= 103000]
-        if not early60.empty:
-            open_60m_close = early60["close"].iloc[-1]
-            rec["open_60m_return"] = (open_60m_close - open_price) / open_price if open_price > 0 else 0.0
-        else:
-            rec["open_60m_return"] = 0.0
-
-        # Decay ratio
-        if abs(day_return) > 1e-8:
-            rec["decay_ratio"] = rec["open_30m_return"] / day_return
-        else:
-            rec["decay_ratio"] = 0.0
-
-        # Reversal speed: minutes until opening return is halved
-        rec["reversal_speed"] = 0.0
-        if abs(rec["open_30m_return"]) > 1e-6:
-            half_target = open_price + 0.5 * (open_30m_close - open_price)
-            for i, row in grp.iterrows():
-                if (rec["open_30m_return"] > 0 and row["close"] <= half_target) or \
-                   (rec["open_30m_return"] < 0 and row["close"] >= half_target):
-                    rec["reversal_speed"] = grp.loc[i, "bar_idx"] if "bar_idx" in grp.columns else 0
-                    break
-
-        # Gap fill ratio: overnight gap
-        # This would need prev_close — approximate with open/previous day's close
-        rec["gap_fill_ratio"] = rec.get("open_30m_return", 0.0)
-
-        # Afternoon momentum
-        afternoon = grp[grp["minute_int"] >= 130000]
-        if not afternoon.empty and afternoon["open"].iloc[0] > 0:
-            rec["afternoon_momentum"] = (
-                (afternoon["close"].iloc[-1] - afternoon["open"].iloc[0])
-                / afternoon["open"].iloc[0]
-            )
-        else:
-            rec["afternoon_momentum"] = 0.0
-
-        # Close auction return (last 5 min)
-        if len(grp) >= 2:
-            close_5m_before = grp["close"].iloc[-2]
-            rec["close_auction_return"] = (
-                (close_price - close_5m_before) / close_5m_before
-                if close_5m_before > 0 else 0.0
-            )
-        else:
-            rec["close_auction_return"] = 0.0
-
-        results.append(rec)
-
-    return pd.DataFrame(results)
-
-
-def extract_volatility_curve_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute intraday volatility curve features."""
-    df = df.copy()
-    df["minute_int"] = df["minute"].astype(int)
-    df["bar_return"] = df.groupby("symbol")["close"].pct_change()
-
-    results = []
-    for (sym, dt), grp in df.groupby(["symbol", "date"]):
-        rec = {"symbol": sym, "date": dt}
-
-        morning = grp[grp["minute_int"] <= 113000]
-        afternoon = grp[grp["minute_int"] >= 130000]
-
-        rec["morning_volatility"] = morning["bar_return"].std() if not morning.empty else 0.0
-        rec["afternoon_volatility"] = afternoon["bar_return"].std() if not afternoon.empty else 0.0
-        rec["vol_curve_skew"] = (
-            rec["morning_volatility"] / rec["afternoon_volatility"]
-            if rec["afternoon_volatility"] > 1e-10 else 1.0
-        )
-
-        # Jump count
-        intra_std = grp["bar_return"].std()
-        if intra_std and intra_std > 0:
-            rec["jump_count"] = (grp["bar_return"].abs() > 3 * intra_std).sum()
-        else:
-            rec["jump_count"] = 0
-
-        # Vol clustering: autocorrelation of abs returns
-        abs_ret = grp["bar_return"].abs().dropna().values
-        if len(abs_ret) >= 3:
-            rec["vol_clustering"] = np.corrcoef(abs_ret[:-1], abs_ret[1:])[0, 1] if np.std(abs_ret) > 0 else 0.0
-        else:
-            rec["vol_clustering"] = 0.0
-
-        # Range ratio
-        rec["range_ratio"] = (
-            (grp["high"].max() - grp["low"].min()) / grp["open"].iloc[0]
-            if grp["open"].iloc[0] > 0 else 0.0
-        )
-
-        results.append(rec)
-
-    return pd.DataFrame(results)
-
-
-def extract_liquidity_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute liquidity/microstructure features."""
-    df = df.copy()
-    results = []
-
-    for (sym, dt), grp in df.groupby(["symbol", "date"]):
-        rec = {"symbol": sym, "date": dt}
-
-        # Trade size per bar
-        grp = grp.copy()
-        grp["trade_size"] = grp["amount"] / grp["num_trades"].replace(0, np.nan)
-        sizes = grp["trade_size"].dropna()
-
-        # Gini coefficient
-        if len(sizes) >= 2:
-            sorted_sizes = np.sort(sizes.values)
-            n = len(sorted_sizes)
-            index = np.arange(1, n + 1)
-            rec["trade_size_gini"] = (
-                (2 * np.sum(index * sorted_sizes)) / (n * np.sum(sorted_sizes)) - (n + 1) / n
-            ) if np.sum(sorted_sizes) > 0 else 0.0
-        else:
-            rec["trade_size_gini"] = 0.0
-
-        # Price impact per trade
-        grp["price_impact"] = (
-            grp["close"].diff().abs() / grp["num_trades"].replace(0, np.nan)
-        )
-        impacts = grp["price_impact"].dropna()
-        rec["price_impact_per_trade"] = impacts.mean() if not impacts.empty else 0.0
-        rec["price_impact_tail"] = impacts.quantile(0.95) if not impacts.empty else 0.0
-
-        # Liquidity gaps
-        rec["liquidity_gap_count"] = (grp["volume"] == 0).sum() + (grp["num_trades"] == 0).sum()
-
-        # Spread proxy
-        grp["spread_proxy"] = (grp["high"] - grp["low"]) / grp["close"].replace(0, np.nan)
-        rec["spread_proxy"] = grp["spread_proxy"].mean() if not grp["spread_proxy"].dropna().empty else 0.0
-
-        # Amihud illiquidity
-        grp["amihud"] = (
-            grp["close"].pct_change().abs() / grp["amount"].replace(0, np.nan)
-        )
-        rec["amihud_illiq"] = grp["amihud"].dropna().mean() if not grp["amihud"].dropna().empty else 0.0
-
-        # Volume stability
-        rec["volume_stability"] = (
-            grp["volume"].std() / grp["volume"].mean() if grp["volume"].mean() > 0 else 1.0
-        )
-
-        results.append(rec)
-
-    return pd.DataFrame(results)
-
-
-def extract_trade_concentration_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute trade concentration features."""
-    df = df.copy()
-    results = []
-
-    for (sym, dt), grp in df.groupby(["symbol", "date"]):
-        rec = {"symbol": sym, "date": dt}
-        total_vol = grp["volume"].sum()
-
-        # Large trade ratio: bars with amount > 95th percentile
-        p95 = grp["amount"].quantile(0.95) if len(grp) >= 20 else grp["amount"].max()
-        rec["large_trade_ratio"] = (
-            grp.loc[grp["amount"] > p95, "volume"].sum() / total_vol if total_vol > 0 else 0.0
-        )
-
-        # HHI of volume share
-        vol_shares = grp["volume"] / total_vol if total_vol > 0 else grp["volume"] * 0
-        rec["trade_concentration_hhi"] = (vol_shares ** 2).sum()
-
-        # Block trade count: bars > 10× median amount
-        median_amt = grp["amount"].median()
-        rec["block_trade_count"] = (grp["amount"] > 10 * median_amt).sum() if median_amt > 0 else 0
-
-        # Retail flow ratio: volume in bars with num_trades > median
-        median_trades = grp["num_trades"].median()
-        rec["retail_flow_ratio"] = (
-            grp.loc[grp["num_trades"] > median_trades, "volume"].sum() / total_vol
-            if total_vol > 0 else 0.5
-        )
-        rec["institutional_participation"] = 1.0 - rec["retail_flow_ratio"]
-
-        results.append(rec)
-
-    return pd.DataFrame(results)
-
-
-def extract_lead_lag_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute lead-lag features (sector-level simplified)."""
-    # This is a simplified version — full sector-level requires cross-stock computation.
-    # Here we compute per-stock proxies based on intraday dynamics.
-    df = df.copy()
-    results = []
-
-    for (sym, dt), grp in df.groupby(["symbol", "date"]):
-        rec = {"symbol": sym, "date": dt}
-
-        # Information arrival speed: time to reach 50% of total abs return
-        abs_ret = grp["close"].pct_change().abs().dropna()
-        if len(abs_ret) > 0 and abs_ret.sum() > 0:
-            cumsum = abs_ret.cumsum()
-            half_point = abs_ret.sum() * 0.5
-            idx = (cumsum >= half_point).idxmax() if (cumsum >= half_point).any() else cumsum.index[-1]
-            rec["information_arrival_speed"] = grp.index.get_loc(idx) / len(grp) if isinstance(idx, (int, np.integer)) else (
-                list(grp.index).index(idx) / len(grp)
-            )
-        else:
-            rec["information_arrival_speed"] = 0.5
-
-        # Simplified lead-lag: just store placeholders for sector-level computation
-        rec["sector_lead_rank"] = 0.5  # Placeholder — needs sector peer computation
-        rec["peer_correlation_lag1"] = 0.0
-        rec["lead_lag_strength"] = 0.0
-
-        results.append(rec)
-
-    return pd.DataFrame(results)
-
-
-def extract_interaction_features(features: pd.DataFrame) -> pd.DataFrame:
-    """Compute interaction features from existing feature columns."""
-    df = features.copy()
-
-    if "flow_imbalance" in df.columns and "vol_clustering" in df.columns:
-        df["flow_vol_interaction"] = df["flow_imbalance"] * df["vol_clustering"]
-    else:
-        df["flow_vol_interaction"] = 0.0
-
-    if "vwap_divergence_close" in df.columns and "afternoon_momentum" in df.columns:
-        df["vwap_momentum_combo"] = df["vwap_divergence_close"] * df["afternoon_momentum"]
-    else:
-        df["vwap_momentum_combo"] = 0.0
-
-    if "amihud_illiq" in df.columns and "morning_volatility" in df.columns:
-        df["liquidity_volatility_ratio"] = (
-            df["amihud_illiq"] / df["morning_volatility"].replace(0, np.nan)
-        ).fillna(0.0)
-    else:
-        df["liquidity_volatility_ratio"] = 0.0
-
-    return df
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Main
-# ═══════════════════════════════════════════════════════════════════════════════
 
 def extract_all_features(minute_df: pd.DataFrame) -> pd.DataFrame:
-    """Run all feature extractors and merge into a single daily table."""
-    print("[INFO] Extracting VWAP features...", file=sys.stderr)
-    vwap = extract_vwap_features(minute_df)
+    df = minute_df.copy()
+    df["date"] = df["date"].astype(str)
 
-    print("[INFO] Extracting order flow features...", file=sys.stderr)
-    flow = extract_order_flow_features(minute_df)
+    print(f"[INFO] {df['symbol'].nunique()} symbols × {df['date'].nunique()} dates", file=sys.stderr)
+    print("[INFO] Processing symbols...", file=sys.stderr)
 
-    print("[INFO] Extracting momentum decay features...", file=sys.stderr)
-    momentum = extract_momentum_decay_features(minute_df)
+    all_feats = []
+    for i, (sym, grp) in enumerate(df.groupby("symbol", sort=False)):
+        if (i + 1) % 50 == 0:
+            print(f"[INFO]   {i+1}/{df['symbol'].nunique()}...", file=sys.stderr)
+        feats = _process_one_symbol(grp)
+        feats["symbol"] = sym
+        all_feats.append(feats.reset_index())
 
-    print("[INFO] Extracting volatility curve features...", file=sys.stderr)
-    vol = extract_volatility_curve_features(minute_df)
+    merged = pd.concat(all_feats, ignore_index=True)
 
-    print("[INFO] Extracting liquidity features...", file=sys.stderr)
-    liq = extract_liquidity_features(minute_df)
+    merged["flow_vol_interaction"] = merged["flow_imbalance"] * merged["vol_clustering"].fillna(0)
+    merged["vwap_momentum_combo"] = merged["vwap_divergence_close"] * merged["afternoon_momentum"].fillna(0)
+    merged["liquidity_volatility_ratio"] = (
+        merged["amihud_illiq"] / merged["morning_volatility"].replace(0, np.nan)
+    ).fillna(0.0)
 
-    print("[INFO] Extracting trade concentration features...", file=sys.stderr)
-    conc = extract_trade_concentration_features(minute_df)
+    nr = merged.isnull().sum(axis=1) / merged.shape[1]
+    merged = merged[nr < 0.5]
 
-    print("[INFO] Extracting lead-lag features...", file=sys.stderr)
-    ll = extract_lead_lag_features(minute_df)
-
-    # Merge all on symbol + date
-    dfs = [vwap, flow, momentum, vol, liq, conc, ll]
-    merged = dfs[0]
-    for d in dfs[1:]:
-        merged = merged.merge(d, on=["symbol", "date"], how="outer")
-
-    # Add interaction features
-    merged = extract_interaction_features(merged)
-
-    # Drop rows with too many NaNs (stocks with insufficient minute data)
-    nan_ratio = merged.isnull().sum(axis=1) / merged.shape[1]
-    merged = merged[nan_ratio < 0.5]
-
-    print(
-        f"[INFO] Extracted {merged.shape[1]} features for "
-        f"{merged['symbol'].nunique()} symbols × {merged['date'].nunique()} dates.",
-        file=sys.stderr,
-    )
-
+    print(f"[INFO] {merged.shape[1]} features, {merged['symbol'].nunique()} sym × {merged['date'].nunique()} dates",
+          file=sys.stderr)
     return merged
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Extract daily features from minute-level OHLCV data."
-    )
-    parser.add_argument(
-        "--input", default=None,
-        help="Input CSV from fetch_minute_data.py."
-    )
-    parser.add_argument(
-        "--output", default=None,
-        help="Output features CSV path."
-    )
-    parser.add_argument(
-        "--run-name", default=None,
-        help="Run name. Looks in output/run_<ts>_<name>/ for minute_data.csv."
-    )
-    args = parser.parse_args()
-
-    if args.run_name:
-        out_root = Path(__file__).resolve().parent.parent / "output"
-        candidates = sorted(out_root.glob(f"run_*_{args.run_name}"), reverse=True)
-        if not candidates:
-            print(f"[FATAL] No run dir matching '*_{args.run_name}'", file=sys.stderr)
-            sys.exit(1)
-        run_dir = candidates[0]
-        args.input = str(run_dir / "minute_data.csv")
-        args.output = str(run_dir / "features.csv")
-        print(f"[INFO] Matched: {run_dir.name}", file=sys.stderr)
-    elif not args.input or not args.output:
-        print("[FATAL] Requires --input and --output, or --run-name.", file=sys.stderr)
-        sys.exit(1)
-
-    minute_df = pd.read_csv(args.input)
-    print(
-        f"[INFO] Loaded {minute_df.shape[0]:,} minute rows from {args.input}.",
-        file=sys.stderr,
-    )
-
-    features = extract_all_features(minute_df)
-
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    features.to_csv(output_path, index=False)
-    print(
-        f"[INFO] Saved {features.shape[0]} rows × {features.shape[1]} cols → {output_path}",
-        file=sys.stderr,
-    )
-
-    # Also copy feature_definitions.json to the output directory
-    defs_src = Path(__file__).resolve().parent.parent / "references" / "feature_definitions.json"
-    defs_dst = output_path.parent / "feature_definitions.json"
-    if defs_src.is_file():
-        shutil.copy(defs_src, defs_dst)
-        print(f"[INFO] Copied feature definitions → {defs_dst}", file=sys.stderr)
+def main():
+    p = argparse.ArgumentParser(description="Extract daily features from minute OHLCV.")
+    p.add_argument("--input", default=None)
+    p.add_argument("--output", default=None)
+    p.add_argument("--run-name", default=None)
+    a = p.parse_args()
+    if a.run_name:
+        r = sorted((Path(__file__).resolve().parent.parent / "output").glob(f"run_*_{a.run_name}"), reverse=True)
+        if not r:
+            print("[FATAL] No run dir", file=sys.stderr); sys.exit(1)
+        a.input = str(r[0] / "minute_data.csv")
+        a.output = str(r[0] / "features.csv")
+        print(f"[INFO] {r[0].name}", file=sys.stderr)
+    if not a.input or not a.output:
+        print("[FATAL] --input --output or --run-name", file=sys.stderr); sys.exit(1)
+    df = pd.read_csv(a.input)
+    print(f"[INFO] {df.shape[0]:,} rows", file=sys.stderr)
+    feats = extract_all_features(df)
+    out = Path(a.output)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    feats.to_csv(out, index=False)
+    print(f"[INFO] Saved → {out}", file=sys.stderr)
+    src = Path(__file__).resolve().parent.parent / "references" / "feature_definitions.json"
+    dst = out.parent / "feature_definitions.json"
+    if src.is_file():
+        shutil.copy(src, dst)
+        print(f"[INFO] Definitions → {dst}", file=sys.stderr)
 
 
 if __name__ == "__main__":

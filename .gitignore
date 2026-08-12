@@ -1,24 +1,3 @@
-# Credentials — never commit real keys
-.env
-
-# Python
-__pycache__/
 *.pyc
-*.pyo
-*.egg-info/
-dist/
-build/
-
-# Output — generated run artifacts
-output/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# OS
-.DS_Store
-Thumbs.db
+/output
+.env

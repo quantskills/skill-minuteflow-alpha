@@ -392,6 +392,27 @@ def main() -> None:
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    # Add expanded formulas from feature_definitions.json
+    _SKILL_ROOT = Path(__file__).resolve().parent.parent
+    defs_path = _SKILL_ROOT / "references" / "feature_definitions.json"
+    if defs_path.is_file():
+        with open(defs_path, "r", encoding="utf-8") as f:
+            defs = json.load(f)
+        features = defs.get("features", {})
+        for alpha in output["alphas"]:
+            expr = alpha.get("expression", "")
+            expanded = expr
+            for name in sorted(features, key=len, reverse=True):
+                if name in expanded:
+                    formula = features[name].get("formula", "")
+                    expanded = expanded.replace(name, f"{name}[{formula}]")
+            alpha["expanded_formula"] = expanded
+            alpha["features_used"] = [
+                {"feature": n, "formula": features[n].get("formula",""), "family": features[n].get("family","")}
+                for n in sorted(features, key=len, reverse=True) if n in expr
+            ]
+        print("[INFO] Added expanded formulas to output.", file=sys.stderr)
+
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
 

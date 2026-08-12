@@ -50,6 +50,28 @@ def _load_operators() -> list[dict]:
     return []
 
 
+def _read_document(doc_path: Path) -> str:
+    """Read text from a PDF, TXT, or other document file."""
+    suffix = doc_path.suffix.lower()
+    if suffix == ".pdf":
+        try:
+            from PyPDF2 import PdfReader
+            reader = PdfReader(str(doc_path))
+            pages = []
+            for page in reader.pages:
+                t = page.extract_text()
+                if t:
+                    pages.append(t)
+            return "\n\n".join(pages)
+        except ImportError:
+            print("[WARN] PyPDF2 not installed, trying raw read.", file=sys.stderr)
+            return doc_path.read_text(encoding="utf-8", errors="replace")
+    elif suffix in (".txt", ".md"):
+        return doc_path.read_text(encoding="utf-8", errors="replace")
+    else:
+        return doc_path.read_text(encoding="utf-8", errors="replace")
+
+
 def _format_operator_catalog(operators: list[dict]) -> str:
     """Format operator catalog as a readable string for the LLM prompt."""
     by_cat: dict[str, list[dict]] = {}
@@ -304,7 +326,7 @@ def main() -> None:
         if not doc_path.is_file():
             print(f"[FATAL] Document not found: {args.doc}", file=sys.stderr)
             sys.exit(1)
-        text = doc_path.read_text(encoding="utf-8")
+        text = _read_document(doc_path)
         print(f"[INFO] Read document: {len(text)} chars.", file=sys.stderr)
     else:
         text = args.query

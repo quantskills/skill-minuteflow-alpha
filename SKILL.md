@@ -53,7 +53,7 @@ quantSkills:
   requires:
     - panda_data>=0.1.0
   summary_zh: 基于分钟级行情数据（PandaData）生成Alpha因子表达式，支持从研报/自然语言输入中提取日内微观结构信号（VWAP偏离、订单流代理、日内动量衰减、波动率曲线等），并通过公式合约验证。
-  summary_en: Generate alpha factor expressions from minute-level market data (PandaData). Takes research docs or natural language queries as input, extracts intraday microstructure signals (VWAP divergence, order flow proxy, momentum decay, volatility curve, trade concentration, lead-lag), and validates against a formula contract.
+  summary_en: Generate alpha factor expressions from minute-level market data (PandaData). Input can be a research document (PDF/txt), URL, natural language query, or the model can invent novel trading paradigms from scratch.
 ---
 ---
 
@@ -64,8 +64,20 @@ Unlike daily-bar factor generation, this skill exploits intraday microstructure
 signals — VWAP divergence, order flow imbalance, volatility curve shape, trade
 concentration — that are invisible at daily resolution.
 
-This skill requires **PandaData** (`panda_data`) for minute data retrieval.
-Set credentials in `.env` and you're ready to go.
+## Input Modes
+
+The skill accepts **four types of input**. You can mix them freely:
+
+| Mode | Example | How it works |
+|:---|:---|:---|
+| **📄 Document** | `--doc paper.pdf` | Extracts text from a research paper, then maps its concepts (e.g. "VR factor", "smart money Q") to minute-derived features. |
+| **🔗 URL / Link** | `--doc https://arxiv.org/...` | Fetches the page content, then generates alphas from the text. Works with any accessible URL containing research text. |
+| **💬 Natural Language** | `--query "stocks where opening gap closes fast reverse next day"` | Maps free-text concepts to the feature catalog. Keywords like "reversal", "VWAP", "liquidity", "smart money" are auto-mapped. |
+| **💡 Model Invention** | `--query "invent 5 mean-reversion alphas using intraday volatility patterns"` | No external document needed. The model generates novel alphas from a trading paradigm description. Useful for brainstorming or exploring new signal families. |
+
+**All four modes** produce the same output: validated alpha expressions (with expanded formulas), feature-level derivations, and backtest-ready factor CSVs.
+
+This skill requires **PandaData** (`panda_data`) for minute data retrieval. Set credentials in `.env`.
 
 It provides:
 
@@ -84,6 +96,12 @@ It provides:
   errors, NaN ratios, and look-ahead violations.
 - **Auto-correction loop** — failed alphas get categorized diagnostics and
   correction hints; the agent retries up to 5 times.
+- **Backtest export** — `scripts/materialize_alphas.py` evaluates every alpha
+  expression against the feature data and writes `date,ticker,factor_value` CSVs
+  compatible with `skill-factor-backtest`. Works on any run regardless of what
+  timeframe the minute data was fetched at — output is always daily-frequency.
+- **Formula expansion** — every validated alpha includes `expanded_formula`
+  showing the full derivation from raw minute data to final expression.
 
 ## Creator, Maintainer, And Scope
 
@@ -143,10 +161,10 @@ It provides:
 
 ### 1. Set up credentials
 
-Copy `.env.example` to `.env` and fill in your PandaData credentials:
+Create a `.env` file with your PandaData credentials:
 
 ```bash
-cp .env.example .env
+# .env
 ```
 
 ```
@@ -155,40 +173,31 @@ PANDA_AI_PASSWORD="panda@2026^_^"
 PANDA_AI_BASE_URL="http://pandadata.pandaaiquant.com"
 ```
 
-### 2. Run the pipeline
+### 2. Run the pipeline (pick your input mode)
 
 ```bash
-# Fetch minute data + extract features
-python scripts/fetch_minute_data.py \
-  --start-date 20250102 \
-  --end-date 20250131 \
-  --universe 000300 \
-  --frequency 5m \
-  --output output/run_001/minute_data.csv
+# Shared: fetch data + extract features (uses config.json defaults)
+python scripts/fetch_minute_data.py --run-name myrun
+python scripts/extract_minute_features.py --run-name myrun
 
-python scripts/extract_minute_features.py \
-  --input output/run_001/minute_data.csv \
-  --output output/run_001/features.csv
+# 📄 Mode A: From a research document (PDF, txt)
+python scripts/generate_minute_alphas.py --run-name myrun \
+  --doc path/to/paper.pdf --n 5
 
-# Generate alphas from a document
-python scripts/generate_minute_alphas.py \
-  --doc "path/to/research_paper.txt" \
-  --features output/run_001/features.csv \
-  --n 5 \
-  --output output/run_001/alphas.json
+# 🔗 Mode B: From a URL
+python scripts/generate_minute_alphas.py --run-name myrun \
+  --doc "https://arxiv.org/abs/..." --n 5
 
-# Or from a natural language query
-python scripts/generate_minute_alphas.py \
-  --query "stocks where opening gap closes fast tend to reverse next day" \
-  --features output/run_001/features.csv \
-  --n 3 \
-  --output output/run_001/alphas.json
+# 💬 Mode C: From a natural language query
+python scripts/generate_minute_alphas.py --run-name myrun \
+  --query "stocks where opening gap closes fast reverse next day" --n 5
 
-# Validate
-python scripts/validate_minute_alphas.py \
-  --alphas output/run_001/alphas.json \
-  --features output/run_001/features.csv \
-  --output output/run_001/validated_alphas.json
+# 💡 Mode D: Let the model invent from a paradigm
+python scripts/generate_minute_alphas.py --run-name myrun \
+  --query "invent 5 momentum alphas using intraday trend persistence" --n 5
+
+# Validate (all modes)
+python scripts/validate_minute_alphas.py --run-name myrun
 ```
 
 ## Minute Feature Families
@@ -203,9 +212,28 @@ The feature extractor produces daily-aggregated features from minute bars:
 | **Volatility Curve** | 6 | `morning_volatility`, `afternoon_volatility`, `vol_curve_skew`, `jump_count`, `vol_clustering` |
 | **Liquidity** | 7 | `trade_size_gini`, `price_impact_per_trade`, `liquidity_gap_count`, `spread_proxy`, `amihud_illiq` |
 | **Trade Concentration** | 5 | `large_trade_ratio`, `trade_concentration_hhi`, `block_trade_count`, `retail_flow_ratio` |
-| **Lead-Lag** | 4 | `sector_lead_rank`, `peer_correlation_lag1`, `lead_lag_strength`, `information_arrival_speed` |
 | **Lead-Lag** | 4 | `sector_lead_rank`, `peer_correlation_lag1`, `information_arrival_speed`, `lead_lag_strength` |
 | **Interaction** | 3 | `flow_vol_interaction`, `vwap_momentum_combo`, `liquidity_volatility_ratio` |
+
+## Backtest Export
+
+Use `scripts/materialize_alphas.py` to convert any run's validated alphas
+into daily-frequency factor CSVs for `skill-factor-backtest`.
+
+```bash
+# Export all alphas from a run
+python scripts/materialize_alphas.py --run-name smartmoney
+# → output/<run>/backtest_factors/<alpha>.csv (date,ticker,value)
+
+# Then backtest:
+python ../skill-factor-backtest/scripts/run_factor_backtest.py \
+  --input-file output/<run>/backtest_factors/<alpha>.csv \
+  --factor-column <alpha_name> \
+  --data-root <market_data_dir> --timespan YYYYMMDD YYYYMMDD
+```
+
+Alphas are computed from minute-level features but output is daily-frequency
+(one row per stock per day) — fully compatible with daily backtesting.
 
 ## Document → Alpha Mapping
 
@@ -223,15 +251,19 @@ When processing a document or NL query, the LLM:
 
 ## Parameters (config.json)
 
-| Parameter | Default | Description |
-|:---|:---|:---|
-| `frequency` | `"5m"` | Minute bar frequency (`1m`, `5m`, `15m`, `60m`). CLI: `--frequency`. |
-| `time_zone` | `["09:30", "15:00"]` | Trading hours filter. CLI: `--time-zone`. |
-| `universe` | `"000300"` | Stock universe code. Approximated as top 300 by market cap. |
-| `lookback_days` | `20` | Trading days of minute data to fetch. CLI: `--start-date`/`--end-date`. |
-| `max_alphas` | `5` | Default number of alphas to generate. CLI: `--n`. |
-| `nan_threshold` | `0.1` | Max allowed NaN ratio. CLI: `--nan-threshold`. |
-| `extreme_threshold` | `5.0` | Max allowed z-score. CLI: `--extreme-threshold`. |
+Scripts read `config.json` for defaults; CLI arguments override. Change values
+in config.json to set your preferred defaults.
+
+| Parameter | Default | CLI Flag | Description |
+|:---|:---|:---|:---|
+| `start_date` | `"20250102"` | `--start-date` | Start date (YYYYMMDD). |
+| `end_date` | `"20250624"` | `--end-date` | End date (YYYYMMDD). 5m allows ~6 months. |
+| `frequency` | `"5m"` | `--frequency` | Bar frequency: `1m`, `5m`, `15m`, `60m`. |
+| `time_zone` | `["09:30","15:00"]` | `--time-zone` | Trading hours filter. |
+| `universe` | `"000300"` | `--universe` | CSI 300, CSI 500, CSI 1000, SSE 50. |
+| `max_alphas` | `5` | `--n` | Default number of alphas per run. |
+| `nan_threshold` | `0.1` | `--nan-threshold` | Max NaN ratio before flagging. |
+| `extreme_threshold` | `5.0` | `--extreme-threshold` | Max z-score before flagging instability. |
 
 ## Agent Platform Instructions
 

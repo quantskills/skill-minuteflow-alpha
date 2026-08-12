@@ -13,6 +13,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -172,21 +173,21 @@ def main() -> None:
         description="Fetch minute-level OHLCV data from PandaData."
     )
     parser.add_argument(
-        "--start-date", required=True,
-        help="Start date (YYYYMMDD), e.g. 20250102."
+        "--start-date", default=None,
+        help="Start date YYYYMMDD (default: from config.json)."
     )
     parser.add_argument(
-        "--end-date", required=True,
-        help="End date (YYYYMMDD), e.g. 20250131."
+        "--end-date", default=None,
+        help="End date YYYYMMDD (default: from config.json)."
     )
     parser.add_argument(
         "--universe", default="000300",
         help="Stock universe index code (default: 000300=CSI 300)."
     )
     parser.add_argument(
-        "--frequency", default="5m",
+        "--frequency", default=None,
         choices=["1m", "5m", "15m", "60m"],
-        help="Bar frequency (default: 5m)."
+        help="Bar frequency (default: from config.json, 5m)."
     )
     parser.add_argument(
         "--time-zone", nargs=2, default=None,
@@ -213,13 +214,23 @@ def main() -> None:
         print("[FATAL] Either --output or --run-name is required.", file=sys.stderr)
         sys.exit(1)
 
-    tz = tuple(args.time_zone) if args.time_zone else None
+    # Load config.json for defaults
+    config_path = Path(__file__).resolve().parent.parent / "config.json"
+    config = {}
+    if config_path.is_file():
+        with open(config_path, "r", encoding="utf-8") as cf:
+            config = json.load(cf)
+
+    start_date = args.start_date or config.get("start_date", "20250102")
+    end_date = args.end_date or config.get("end_date", "20250124")
+    frequency = args.frequency or config.get("frequency", "5m")
+    tz = tuple(args.time_zone) if args.time_zone else tuple(config.get("time_zone", ["09:30", "15:00"]))
 
     df = fetch_minute_data(
-        start_date=args.start_date,
-        end_date=args.end_date,
-        universe=args.universe,
-        frequency=args.frequency,
+        start_date=start_date,
+        end_date=end_date,
+        universe=args.universe or config.get("universe", "000300"),
+        frequency=frequency,
         time_zone=tz,
     )
 
