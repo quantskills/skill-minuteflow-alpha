@@ -421,6 +421,91 @@ def main() -> None:
         file=sys.stderr,
     )
 
+    # ── Post-validation: materialize backtest factors ──────────────────
+    run_dir = output_path.parent
+    try:
+        from materialize_alphas import materialize_run
+        bt_dir = run_dir / "backtest_factors"
+        bt_files = materialize_run(str(output_path), str(run_dir / "features.csv"), str(bt_dir))
+        if bt_files:
+            print(f"[INFO] Backtest factors: {len(bt_files)} CSVs → {bt_dir}", file=sys.stderr)
+    except Exception as e:
+        print(f"[WARN] Could not materialize backtest factors: {e}", file=sys.stderr)
+
+    # ── Post-validation: generate run README ──────────────────────────
+    try:
+        _generate_run_readme(run_dir, output)
+    except Exception as e:
+        print(f"[WARN] Could not generate README: {e}", file=sys.stderr)
+
+
+def _generate_run_readme(run_dir: Path, validated: dict) -> None:
+    """Generate a README.md describing the run output."""
+    summary = validated.get("summary", {})
+    alphas_list = validated.get("alphas", [])
+    passed_alphas = [a for a in alphas_list if a.get("validation", {}).get("valid")]
+
+    lines = [
+        f"# Run: {run_dir.name}",
+        "",
+        "## Summary",
+        "",
+        f"- **Total alphas**: {summary.get('total', 0)}",
+        f"- **Passed**: {summary.get('passed', 0)}",
+        f"- **Failed**: {summary.get('failed', 0)}",
+        f"- **Pass rate**: {summary.get('pass_rate', 0):.0%}",
+        "",
+        "## Output Files",
+        "",
+        "| File | Description |",
+        "|------|-------------|",
+        "| `minute_data.csv` | Raw minute-level OHLCV bars from PandaData |",
+        "| `features.csv` | Daily-aggregated features (44 features × symbols × dates) |",
+        "| `feature_definitions.json` | Feature catalog with formulas |",
+        "| `alphas.json` | Generated alpha expressions (prompt + filled) |",
+        "| `validated_alphas.json` | Validated alphas with expanded formulas |",
+        "| `backtest_factors/` | Daily factor CSVs ready for skill-factor-backtest |",
+        "",
+        "## Validated Alphas",
+        "",
+    ]
+
+    for a in passed_alphas:
+        name = a.get("name", "unnamed")
+        expr = a.get("expression", "")
+        desc = a.get("description", "")
+        expanded = a.get("expanded_formula", "")
+        features_used = a.get("features_used", [])
+        families = sorted(set(f.get("family", "") for f in features_used if f.get("family")))
+
+        lines.append(f"### {name}")
+        lines.append(f"```\n{expr}\n```")
+        if desc:
+            lines.append(f"\n{desc}\n")
+        lines.append(f"- **Features used**: {', '.join(f['feature'] for f in features_used)}")
+        lines.append(f"- **Families**: {', '.join(families)}")
+        lines.append(f"- **Expanded**: `{expanded[:120]}...`" if len(expanded) > 120 else f"- **Expanded**: `{expanded}`")
+        lines.append(f"- **Backtest CSV**: `backtest_factors/{name}.csv`")
+        lines.append("")
+
+    lines.append("## Backtest Integration")
+    lines.append("")
+    lines.append("```bash")
+    lines.append("# Run backtest on any factor:")
+    if passed_alphas:
+        first = passed_alphas[0]["name"]
+        lines.append(f"python ../skill-factor-backtest/scripts/run_factor_backtest.py \\")
+        lines.append(f"  --input-file backtest_factors/{first}.csv \\")
+        lines.append(f"  --factor-column {first} \\")
+        lines.append(f"  --data-root <market_data_dir> \\")
+        lines.append(f"  --timespan YYYYMMDD YYYYMMDD")
+    lines.append("```")
+    lines.append("")
+
+    readme_path = run_dir / "README.md"
+    readme_path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"[INFO] Run README → {readme_path}", file=sys.stderr)
+
 
 if __name__ == "__main__":
     main()

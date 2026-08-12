@@ -9,9 +9,6 @@ backtesting.
 
 ```bash
 # 1. Set credentials in .env
-#    PANDA_AI_USERNAME=...
-#    PANDA_AI_PASSWORD=...
-#    PANDA_AI_BASE_URL=http://pandadata.pandaaiquant.com
 
 # 2. Fetch minute data + extract features (uses config.json defaults)
 python scripts/fetch_minute_data.py --run-name myrun
@@ -23,42 +20,38 @@ python scripts/generate_minute_alphas.py --run-name myrun \
 python scripts/generate_minute_alphas.py --run-name myrun \
   --query "opening gap reversal" --n 5   # Natural language
 
-# 4. Validate
-python scripts/validate_minute_alphas.py --run-name myrun
+# 4. Fill in alphas in output/<run>/alphas.json (LLM agent)
 
-# 5. Export for backtest
-python scripts/materialize_alphas.py --run-name myrun
+# 5. Validate (auto-generates backtest_factors/ + README.md)
+python scripts/validate_minute_alphas.py --run-name myrun
 ```
 
-## Input Modes
+## Run Output
 
-| Mode | Flag | Description |
-|---|---|---|
-| Document | `--doc paper.pdf` | Research paper or text file |
-| URL | `--doc https://...` | Any accessible webpage |
-| Natural Language | `--query "..."` | Free-text concept description |
-| Model Invention | `--query "invent..."` | Model creates alphas from a paradigm |
+Each validated run produces:
 
-## Feature Families (44 features from 5-min bars)
-
-| Family | Features |
-|---|---|
-| VWAP | divergence (close, max, 30m), slope, volume share by hour |
-| Order Flow | imbalance (full day, first/last hour), persistence, buy ratio |
-| Momentum Decay | open-30m/60m return, decay ratio, reversal speed, afternoon momentum |
-| Volatility Curve | morning/afternoon vol, skew, jump count, clustering, range ratio |
-| Liquidity | trade size Gini, price impact, spread proxy, Amihud, volume stability |
-| Trade Concentration | large trade ratio, HHI, block trades, retail/institutional flow |
-| Lead-Lag | information arrival speed, sector lead, peer correlation |
-| Interaction | flow × vol, VWAP × momentum, liquidity / volatility |
+```
+output/<run>/
+├── README.md                # Auto-generated documentation
+├── minute_data.csv          # Raw minute OHLCV bars
+├── features.csv             # 44 daily-aggregated features
+├── feature_definitions.json # Feature catalog with formulas
+├── alphas.json              # Alpha expressions
+├── validated_alphas.json    # Validated with expanded formulas
+└── backtest_factors/        # Daily CSVs ready for backtesting
+    ├── <alpha1>.csv         # date,ticker,value
+    └── <alpha2>.csv
+```
 
 ## Backtest Integration
 
-Export alphas as daily CSVs for `skill-factor-backtest` or `skill-factor-loop-evolve`:
+Backtest factors are **auto-generated** during validation. Run backtest directly:
 
 ```bash
-python scripts/materialize_alphas.py --run-name myrun
-# → output/<run>/backtest_factors/<alpha>.csv (date, ticker, value)
+python ../skill-factor-backtest/scripts/run_factor_backtest.py \
+  --input-file output/<run>/backtest_factors/<alpha>.csv \
+  --factor-column <alpha_name> \
+  --data-root <market_data_dir> --timespan YYYYMMDD YYYYMMDD
 ```
 
 ## Requirements

@@ -100,6 +100,11 @@ It provides:
   expression against the feature data and writes `date,ticker,factor_value` CSVs
   compatible with `skill-factor-backtest`. Works on any run regardless of what
   timeframe the minute data was fetched at — output is always daily-frequency.
+  **The validate step now runs materialize automatically** — every validated run
+  gets a `backtest_factors/` directory with ready-to-use daily factor CSVs.
+- **Run README** — each run directory gets a `README.md` auto-generated after
+  validation, documenting all alphas, features used, expanded formulas, and
+  backtest integration instructions.
 - **Formula expansion** — every validated alpha includes `expanded_formula`
   showing the full derivation from raw minute data to final expression.
 
@@ -196,8 +201,34 @@ python scripts/generate_minute_alphas.py --run-name myrun \
 python scripts/generate_minute_alphas.py --run-name myrun \
   --query "invent 5 momentum alphas using intraday trend persistence" --n 5
 
-# Validate (all modes)
+# Fill in the alphas in output/<run>/alphas.json (LLM agent step)
+
+# Validate (auto-generates backtest_factors/ + README.md)
 python scripts/validate_minute_alphas.py --run-name myrun
+```
+
+### 3. Run output structure
+
+After successful validation, each run directory contains:
+
+```
+output/<run>/
+├── README.md                # Auto-generated run documentation
+├── minute_data.csv          # Raw minute bars
+├── features.csv             # Daily-aggregated features
+├── feature_definitions.json # Feature catalog
+├── alphas.json              # Alpha expressions (prompt + filled)
+├── validated_alphas.json    # Validated alphas with expanded formulas
+└── backtest_factors/        # Daily factor CSVs for backtesting
+    ├── <alpha1>.csv         # date,ticker,value
+    ├── <alpha2>.csv
+    └── ...
+
+# Backtest any factor:
+python ../skill-factor-backtest/scripts/run_factor_backtest.py \
+  --input-file output/<run>/backtest_factors/<alpha>.csv \
+  --factor-column <alpha_name> \
+  --data-root <market_data_dir> --timespan YYYYMMDD YYYYMMDD
 ```
 
 ## Minute Feature Families
