@@ -1,52 +1,51 @@
 # MinuteFlow Alpha
 
-Generate alpha factor expressions from **minute-level market data** using
-PandaData. Extracts 44 intraday microstructure features across 8 signal
-families and produces validated alpha expressions for daily-frequency
-backtesting. Agents can extend the catalog with custom features
-(`new_features`) and operators (`new_operator`).
+基于 **分钟级行情数据**（PandaData）生成 Alpha 因子表达式。从分钟K线中提取
+44 个日内微观结构特征（8 大信号族），并输出经过验证、可直接用于日频回测的
+Alpha 表达式。智能体可通过自定义特征（`new_features`）和自定义算子
+（`new_operator`）扩展特征目录。
 
-## Quick Start
+## 快速开始
 
 ```bash
-# 1. Set credentials in .env
+# 1. 在 .env 中配置凭证
 
-# 2. Fetch minute data + extract features (uses config.json defaults)
+# 2. 拉取分钟数据 + 提取特征（使用 config.json 默认参数）
 python scripts/fetch_minute_data.py --run-name myrun
 python scripts/extract_minute_features.py --run-name myrun
 
-# 3. Generate alphas — pick your input mode:
+# 3. 生成 Alpha —— 选择输入模式：
 python scripts/generate_minute_alphas.py --run-name myrun \
-  --doc paper.pdf --n 5          # Document
+  --doc paper.pdf --n 5          # 文档
 python scripts/generate_minute_alphas.py --run-name myrun \
-  --query "opening gap reversal" --n 5   # Natural language
+  --query "opening gap reversal" --n 5   # 自然语言
 
-# 4. Fill in alphas in output/<run>/alphas.json (LLM agent)
+# 4. 在 output/<run>/alphas.json 中填写 Alpha（由 LLM 智能体完成）
 
-# 5. Validate (auto-generates backtest_factors/ + README.md)
+# 5. 验证（自动生成 backtest_factors/ + README.md）
 python scripts/validate_minute_alphas.py --run-name myrun
 ```
 
-## Run Output
+## 运行输出
 
-Each validated run produces:
+每次验证后的运行都会生成：
 
 ```
 output/<run>/
-├── README.md                # Auto-generated documentation
-├── minute_data.csv          # Raw minute OHLCV bars
-├── features.csv             # 44 daily-aggregated features
-├── feature_definitions.json # Feature catalog with formulas
-├── alphas.json              # Alpha expressions
-├── validated_alphas.json    # Validated with expanded formulas
-└── backtest_factors/        # Daily CSVs ready for backtesting
+├── README.md                # 自动生成的文档
+├── minute_data.csv          # 原始分钟 OHLCV K线
+├── features.csv             # 44 个日聚合特征
+├── feature_definitions.json # 特征目录及公式
+├── alphas.json              # Alpha 表达式
+├── validated_alphas.json    # 已验证 Alpha + 展开公式
+└── backtest_factors/        # 日频因子 CSV（可直接回测）
     ├── <alpha1>.csv         # date,ticker,value
     └── <alpha2>.csv
 ```
 
-## Backtest Integration
+## 回测集成
 
-Backtest factors are **auto-generated** during validation. Run backtest directly:
+回测因子在验证阶段**自动生成**，可直接回测：
 
 ```bash
 python ../skill-factor-backtest/scripts/run_factor_backtest.py \
@@ -55,22 +54,22 @@ python ../skill-factor-backtest/scripts/run_factor_backtest.py \
   --data-root <market_data_dir> --timespan YYYYMMDD YYYYMMDD
 ```
 
-## Requirements
+## 环境要求
 
 - Python 3.10+
 - `panda_data>=0.1.0`
-- Valid PandaData credentials in `.env`
+- 在 `.env` 中配置有效的 PandaData 凭证
 
-## Parameters (config.json)
+## 参数（config.json）
 
-| Parameter | Default | Description |
+| 参数 | 默认值 | 说明 |
 |---|---|---|
-| `start_date` | `20250102` | Start date (YYYYMMDD) |
-| `end_date` | `20250624` | End date (YYYYMMDD) |
-| `frequency` | `5m` | Bar frequency: 1m, 5m, 15m, 60m |
-| `universe` | `000300` | CSI 300, CSI 500, CSI 1000, SSE 50 |
-| `max_alphas` | `5` | Default number of alphas per run |
+| `start_date` | `20250102` | 开始日期（YYYYMMDD） |
+| `end_date` | `20250624` | 结束日期（YYYYMMDD） |
+| `frequency` | `5m` | K线频率：1m, 5m, 15m, 60m |
+| `universe` | `000300` | 沪深300、中证500、中证1000、上证50 |
+| `max_alphas` | `5` | 每次运行的默认 Alpha 数量 |
 
-## License
+## 许可证
 
 GPL-3.0-only
