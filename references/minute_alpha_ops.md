@@ -5,6 +5,10 @@ All generated expressions **must** use only the fields and functions listed belo
 
 > **Complete computation formulas and derivations are in [`feature_definitions.json`](feature_definitions.json).**
 > Every run copies this file to the output directory as `feature_definitions.json`.
+>
+> **Custom features**: agents may define new features (beyond the 44 catalog fields) as
+> expressions over existing fields + operators, declared via `new_features` in the alpha
+> JSON. See "Defining Custom Features" below.
 
 ## Available Field Variables
 
@@ -94,6 +98,34 @@ Each field is a `date × symbol` DataFrame. Fields are grouped by signal family.
 | `flow_vol_interaction` | `flow_imbalance × vol_clustering` | Flow direction × vol persistence. |
 | `vwap_momentum_combo` | `vwap_divergence_close × afternoon_momentum` | VWAP position × afternoon trend. |
 | `liquidity_volatility_ratio` | `amihud_illiq / morning_volatility` | Illiquidity per unit of volatility. |
+
+## Defining Custom Features
+
+The 44 catalog fields above are the default feature set. When a document or
+query requires a signal not in the catalog, the agent may define **new
+features** via a `new_features` list in the alpha JSON (top-level or
+per-alpha). Each custom feature must be computable as an **expression over
+existing fields and operators**:
+
+```json
+{
+  "name": "smart_flow_pressure_5d",
+  "expression": "ts_mean(flow_imbalance * institutional_participation, 5)",
+  "description": "5-day smoothed smart-money flow pressure.",
+  "formula": "ts_mean(flow_imbalance × institutional_participation, 5)",
+  "family": "custom"
+}
+```
+
+Rules:
+
+- Custom features are evaluated **in declaration order**; later features may
+  reference earlier ones.
+- They must use only catalog fields, operators, and previously-declared custom
+  features.
+- Do **not** reuse an existing catalog field name.
+- The validator computes them at validation time and injects them into the
+  feature space, so alphas may use them as leaf variables.
 
 ## Available Functions
 
@@ -209,10 +241,10 @@ rank(vwap_divergence_close) + rank(flow_imbalance_last_hour)
 
 ## Validation Rules
 
-1. Every field name must match exactly one of the fields defined above.
+1. Every field name must match exactly one of the fields defined above, or a custom feature declared via `new_features`.
 2. Every function name must match exactly (case-sensitive).
 3. Argument counts and types must match the signatures above.
-4. Only the fields defined in this contract may appear as leaf variables.
+4. Only the fields defined in this contract and declared custom features may appear as leaf variables.
 5. `delay(x, n)`, `delta(x, n)`, and `returns(x, n)` MUST use n ≥ 1 (look-ahead prevention).
 6. Never divide by something that could be zero — use `max(denom, 1e-8)`.
 7. Never take `log(x)` without ensuring `x > 0` — use `log(max(x, 1e-8))`.

@@ -1,9 +1,10 @@
 # MinuteFlow Alpha
 
 Generate alpha factor expressions from **minute-level market data** using
-PandaData. Extracts 44 intraday microstructure features across 7 signal
+PandaData. Extracts 44 intraday microstructure features across 8 signal
 families and produces validated alpha expressions for daily-frequency
-backtesting.
+backtesting. Agents can extend the catalog with custom features
+(`new_features`) and operators (`new_operator`).
 
 ## Quick Start
 

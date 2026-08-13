@@ -35,6 +35,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from feature_extension import collect_new_features, compute_new_features
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Paths
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -117,6 +119,15 @@ def materialize_run(alphas_path: str, features_path: str, output_dir: str) -> li
 
     features_df = pd.read_csv(features_path)
     print(f"[INFO] {features_df.shape[0]} rows, {len(alphas)} alphas", file=sys.stderr)
+
+    # Compute agent-defined custom features (top-level or per-alpha defs)
+    new_feature_defs = collect_new_features(data) if isinstance(data, dict) else []
+    if new_feature_defs:
+        features_df, computed, ferrs = compute_new_features(features_df, new_feature_defs)
+        if ferrs:
+            for err in ferrs:
+                print(f"[WARN] {err}", file=sys.stderr)
+        print(f"[INFO] {len(computed)} custom features computed.", file=sys.stderr)
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

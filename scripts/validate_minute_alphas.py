@@ -28,6 +28,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from feature_extension import collect_new_features, compute_new_features
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Contract
@@ -125,11 +127,15 @@ def _build_eval_namespace(features_df: pd.DataFrame) -> dict:
 # Validation
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def extract_field_refs(expression: str) -> set[str]:
+def extract_field_refs(
+    expression: str, allowed_fields: set[str] | None = None
+) -> set[str]:
     """Extract field variable references from an expression string."""
+    if allowed_fields is None:
+        allowed_fields = ALLOWED_FIELDS
     # Find words that match allowed field names
     tokens = set(re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', expression))
-    return tokens & ALLOWED_FIELDS
+    return tokens & allowed_fields
 
 
 def extract_function_calls(expression: str) -> set[str]:
@@ -167,13 +173,15 @@ def check_lookahead(expression: str) -> list[str]:
     return issues
 
 
-def check_zero_division(expression: str) -> list[str]:
+def check_zero_division(expression: str, allowed_fields: set[str] | None = None) -> list[str]:
     """Check for potential division by zero without guard."""
+    if allowed_fields is None:
+        allowed_fields = ALLOWED_FIELDS
     issues = []
     # Simple check: division by a field directly
     divisions = re.findall(r'/\s*([a-zA-Z_][a-zA-Z0-9_]*)', expression)
     for field in divisions:
-        if field in ALLOWED_FIELDS:
+        if field in allowed_fields:
             issues.append(
                 f"Division by '{field}' without zero-guard. "
                 f"Use max({field}, 1e-8) as denominator."
@@ -181,13 +189,15 @@ def check_zero_division(expression: str) -> list[str]:
     return issues
 
 
-def check_log_safety(expression: str) -> list[str]:
+def check_log_safety(expression: str, allowed_fields: set[str] | None = None) -> list[str]:
     """Check log() calls for negative/zero input."""
+    if allowed_fields is None:
+        allowed_fields = ALLOWED_FIELDS
     issues = []
     # Find log(x) calls where x is a bare field
     log_calls = re.findall(r'log\s*\(\s*([a-zA-Z_][a-zA-Z0-9_]*)', expression)
     for field in log_calls:
-        if field in ALLOWED_FIELDS:
+        if field in allowed_fields:
             issues.append(
                 f"log({field}) without clamping. "
                 f"Use log(max({field}, 1e-8))."
@@ -200,13 +210,15 @@ def evaluate_expression(
     features_df: pd.DataFrame,
     nan_threshold: float = 0.1,
     extreme_threshold: float = 5.0,
+    extra_fields: set[str] | None = None,
 ) -> dict[str, Any]:
     """Evaluate an alpha expression against the feature DataFrame."""
     result = {"expression": expression, "valid": True, "issues": [], "stats": {}}
+    allowed_fields = ALLOWED_FIELDS | set(extra_fields or [])
 
     # 1. Check fields
-    used_fields = extract_field_refs(expression)
-    unknown_fields = used_fields - ALLOWED_FIELDS
+    used_fields = extract_field_refs(expression, allowed_fields)
+    unknown_fields = used_fields - allowed_fields
     if unknown_fields:
         result["issues"].append(f"Unknown fields: {unknown_fields}")
         result["valid"] = False
@@ -229,13 +241,13 @@ def evaluate_expression(
         result["valid"] = False
 
     # 4. Check zero division
-    zd_issues = check_zero_division(expression)
+    zd_issues = check_zero_division(expression, allowed_fields)
     if zd_issues:
         result["issues"].extend(zd_issues)
         result["valid"] = False
 
     # 5. Check log safety
-    log_issues = check_log_safety(expression)
+    log_issues = check_log_safety(expression, allowed_fields)
     if log_issues:
         result["issues"].extend(log_issues)
         result["valid"] = False
@@ -346,6 +358,24 @@ def main() -> None:
         file=sys.stderr,
     )
 
+    # Collect + compute agent-defined custom features
+    new_feature_defs = (
+        collect_new_features(alphas_data) if isinstance(alphas_data, dict) else []
+    )
+    if new_feature_defs:
+        features_df, computed_features, feature_errors = compute_new_features(
+            features_df, new_feature_defs
+        )
+        extra_fields = set(computed_features)
+        if feature_errors:
+            print("[WARN] Custom feature errors:", file=sys.stderr)
+            for err in feature_errors:
+                print(f"  - {err}", file=sys.stderr)
+    else:
+        computed_features = []
+        feature_errors = []
+        extra_fields = set()
+
     # Validate each alpha
     results = []
     passed = 0
@@ -368,6 +398,7 @@ def main() -> None:
             expr, features_df,
             nan_threshold=args.nan_threshold,
             extreme_threshold=args.extreme_threshold,
+            extra_fields=extra_fields,
         )
 
         if validation["valid"]:
@@ -388,6 +419,12 @@ def main() -> None:
             "failed": failed,
             "pass_rate": passed / len(alphas) if alphas else 0.0,
         },
+        "new_features": new_feature_defs,
+        "custom_features": {
+            "defined": len(new_feature_defs),
+            "computed": computed_features,
+            "errors": feature_errors,
+        },
     }
 
     output_path = Path(args.output)
@@ -399,6 +436,14 @@ def main() -> None:
         with open(defs_path, "r", encoding="utf-8") as f:
             defs = json.load(f)
         features = defs.get("features", {})
+        # Merge agent-defined custom features so they expand too
+        for fdef in new_feature_defs:
+            fname = (fdef.get("name") or "").strip()
+            if fname and fname in computed_features:
+                features[fname] = {
+                    "formula": fdef.get("formula") or fdef.get("expression", ""),
+                    "family": fdef.get("family", "custom"),
+                }
         for alpha in output["alphas"]:
             expr = alpha.get("expression", "")
             expanded = expr

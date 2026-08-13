@@ -83,15 +83,19 @@ It provides:
 
 - **Minute data fetcher** — pulls 1m/5m/15m bars from PandaData via
   `get_market_min_data`, with automatic date-range estimation and rate limiting.
-- **Rich feature extractor** — computes 40+ minute-derived daily features
-  across 7 families: VWAP, order flow, momentum decay, volatility curve,
-  liquidity, trade concentration, lead-lag.
+- **Rich feature extractor** — computes 44 minute-derived daily features
+  across 8 families: VWAP, order flow, momentum decay, volatility curve,
+  liquidity, trade concentration, lead-lag, interaction. Agents may also
+  define **custom features** (`new_features`) as expressions over existing
+  features and operators when the document/query demands a new signal.
 - **Alpha expression generator** — takes a research document or NL query,
   maps it to the minute-feature catalog, and produces valid alpha expressions
   following the formula contract.
 - **Formula contract** — `references/minute_alpha_ops.md` defines all 44
   allowed minute-derived fields and 26 functions for composable expressions.
-  Operators are loaded from `references/operators.json` at runtime.
+  Operators are loaded from `references/operators.json` at runtime, and both
+  new operators (`new_operator`) and new features (`new_features`) can be
+  proposed by the agent.
 - **Validator** — evaluates each expression against real minute data to catch
   errors, NaN ratios, and look-ahead violations.
 - **Auto-correction loop** — failed alphas get categorized diagnostics and
@@ -135,7 +139,7 @@ It provides:
                ▼
 ┌─────────────────────────────────┐
 │  Step 2: Extract minute features │
-│  40+ features across 7 families  │
+│  44 features across 8 families   │
 │  → per-day per-stock flat table  │
 └──────────────┬──────────────────┘
                ▼

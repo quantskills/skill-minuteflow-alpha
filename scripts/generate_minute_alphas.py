@@ -254,6 +254,15 @@ a custom computation. For each new operator, provide:
   - The operator will be added to operators.json and validated.
 Standard arithmetic (+, -, *, /) and parentheses are always available.
 
+FEATURE EXTENSION RULE:
+You MAY define NEW minute-derived features if the document/query requires a
+signal not present in the catalog. Each new feature must be computable as an
+expression over EXISTING features and operators, provided in a "new_features"
+list (top-level or on each alpha):
+  "new_features": [{{"name": "my_feature", "expression": "ts_mean(flow_imbalance, 5) / max(amihud_illiq, 1e-8)", "description": "...", "formula": "...", "family": "custom"}}]
+- New features are computed in declaration order; later features may reference earlier ones.
+- Do NOT reuse an existing catalog field name.
+
 CRITICAL — LOOK-AHEAD BIAS PREVENTION:
 - delay(x, n), delta(x, n), and returns(x, n) MUST use n ≥ 1
 - All rolling functions inherently use only past data — this is correct
@@ -271,7 +280,8 @@ REQUIRED — ACADEMIC ATTRIBUTION:
 OUTPUT FORMAT:
 Return a JSON array of objects with keys:
   name, expression, description, rationale, signal_family, source, source_link,
-  new_operator (optional, only if proposing a new operator)
+  new_operator (optional, only if proposing a new operator),
+  new_features (optional, list of custom feature definitions)
 
 Where signal_family is one of:
   vwap, order_flow, momentum_decay, volatility_curve, liquidity,
@@ -368,7 +378,8 @@ def main() -> None:
             "Pass the 'prompt' field to an LLM agent (Claude, GPT-4, etc.). "
             "The agent should return a JSON array of alpha objects with keys: "
             "name, expression, description, rationale, signal_family, source, source_link. "
-            "Optionally include 'new_operator' to propose a new function. "
+            "Optionally include 'new_operator' to propose a new function, or "
+            "'new_features' to define custom minute features. "
             "Then run validate_minute_alphas.py to check correctness."
         ),
         "alphas": [],  # To be filled by the agent
