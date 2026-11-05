@@ -51,7 +51,7 @@ quantSkills:
   validation_level: listed
   maintainer_type: community
   requires:
-    - panda_data>=0.1.0
+    - panda_data==1.0.6
   summary_zh: 基于分钟级行情数据（PandaData）生成Alpha因子表达式，支持从研报/自然语言输入中提取日内微观结构信号（VWAP偏离、订单流代理、日内动量衰减、波动率曲线等），并通过公式合约验证。
   summary_en: Generate alpha factor expressions from minute-level market data (PandaData). Input can be a research document (PDF/txt), URL, natural language query, or the model can invent novel trading paradigms from scratch.
 ---
@@ -311,3 +311,7 @@ Read SKILL.md → Read references/minute_alpha_ops.md → Fetch minute data →
 Extract features → Read input document → Generate alpha JSON →
 Validate → (correct) → Output
 ```
+
+## Pandadata compatibility
+
+[Pandadata 1.0.6 compatibility](references/pandadata-compatibility.md) — exact SDK baseline, validation scope, and shared guidance for all supported agent runtimes.
